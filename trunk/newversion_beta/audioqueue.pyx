@@ -48,7 +48,11 @@ cdef class AudioQueue:
         self.speedrate[0]=tps/samplerate
         self.speedrate[1]=1./samplerate # how much seconds does elapse per sample
         self.mutex=threading.Lock()
+    def __len__(self):
+      """ return the current amount of audio in the queue"""
+      return self._totallen
     def get_len(self):
+        """ return the max amount of audio in the queue """
         return self.limitsz
     def get(self,wait=True):
         if (self.mutex.acquire(wait)):

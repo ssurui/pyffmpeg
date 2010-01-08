@@ -25,7 +25,7 @@
 #     * More examples
 #
 #    Abilities
-#     * Frame seeking
+#     * Frame seeking (TO BE CHECKED again and again)
 #
 #    Changed compared with pyffmpeg:
 #     * Clean up destructors
@@ -416,7 +416,8 @@ cdef extern from "libavcodec/avcodec.h":
     void avcodec_flush_buffers(AVCodecContext *avctx)
 
 
-
+OUTPUTMODE_NUMPY=0
+OUTPUTMODE_PIL=1
 
 
 
@@ -628,6 +629,11 @@ try:
 except:
     numpy=None
 
+try:
+   import PIL
+   from PIL import Image
+except:
+   Image=None
 
 def py_av_register_all():
     if __registered:
@@ -639,8 +645,7 @@ cdef AVRational AV_TIME_BASE_Q
 AV_TIME_BASE_Q.num = 1
 AV_TIME_BASE_Q.den = AV_TIME_BASE
 
-OUTPUTMODE_NUMPY=0
-OUTPUTMODE_PIL=1
+
 
 
 AVCODEC_MAX_AUDIO_FRAME_SIZE=192000
@@ -652,8 +657,8 @@ cdef av_read_frame_flush        (       AVFormatContext *        s )  :
     cdef int i
     #flush_packet_queue(s);
     if (s.cur_st) :
-        if (s.cur_st.parser):
-            av_free_packet(&s.cur_st.cur_pkt)
+        #if (s.cur_st.parser):
+        #    av_free_packet(&s.cur_st.cur_pkt)
         s.cur_st = NULL
 
     #s.cur_st.cur_ptr = NULL;
@@ -679,6 +684,7 @@ cdef DEBUG(s):
 
 ## contains pairs of timestamp, array
 
+
 from audioqueue import AudioQueue, Queue_Empty, Queue_Full
 
 
@@ -693,6 +699,7 @@ py_av_register_all()
 TS_AUDIOVIDEO={'video1':(CODEC_TYPE_VIDEO, -1,  {}), 'audio1':(CODEC_TYPE_AUDIO, -1, {})}
 TS_AUDIO={ 'audio1':(CODEC_TYPE_AUDIO, -1, {})}
 TS_VIDEO={ 'video1':(CODEC_TYPE_VIDEO, -1, {})}
+TS_VIDEO_PIL={ 'video1':(CODEC_TYPE_VIDEO, -1, {'outputmode':OUTPUTMODE_PIL})}
 
 ##################################################################
 # Once we open a file we may recover different tracks
@@ -1031,7 +1038,7 @@ cdef class AudioTrack(Track):
 
 
     def get_cur_pts(self):
-        return self.pts
+        return self.last_pts
 
     def reset_buffers(self):
         ## violent solution but the most efficient so far...
@@ -1095,6 +1102,9 @@ cdef class AudioTrack(Track):
                 else:
                     pts = pkt.pts
                 opts=pts
+		#self.pts=pts
+                self.last_pts=av_rescale(pkt.pts,AV_TIME_BASE * <int64_t>self.stream.time_base.num,self.stream.time_base.den)
+                self.last_dts=av_rescale(pkt.dts,AV_TIME_BASE * <int64_t>self.stream.time_base.num,self.stream.time_base.den)
                 xpts= av_rescale(pts,AV_TIME_BASE * <int64_t>self.stream.time_base.num,self.stream.time_base.den)
                 xpts=float(pts)/AV_TIME_BASE
                 cb=self.audio_buf[bb:eb].copy()
@@ -1120,7 +1130,10 @@ cdef class AudioTrack(Track):
         #DEBUG("/AudioTrack : get_next_frame")
         return self.lf
     def get_current_frame(self): ### TODO : this approximative yet
-        return self.audioq[0:int(self.get_samplerate()//self.tps)]
+        dur=int(self.get_samplerate()//self.tps)
+        while (len(self.audioq)<dur):
+          self.vr.read_packet()
+        return self.audioq[0:dur]
     def print_buffer_stats(self):
         ##
         ##
@@ -1172,7 +1185,8 @@ cdef class VideoTrack(Track):
             #print "shape", (self.dest_height, self.dest_width,numBytes/(self.dest_width*self.dest_height))
             self.videoframebuffers=[ numpy.zeros(shape=(self.dest_height, self.dest_width,numBytes/(self.dest_width*self.dest_height)),  dtype=numpy.uint8)      for i in range(self.videobuffers) ]
         else:
-            self.videoframebuffers=[ None      for i in range(self.videobuffers) ]
+            assert self.pixel_format==PIX_FMT_RGB24, "While using PIL only RGB pixel format is supported by pyffmpeg"
+            self.videoframebuffers=[ Image.new("RGB",(self.dest_width,self.dest_height)) for i in range(self.videobuffers) ]
         self.convert_ctx = sws_getContext(self.width, self.height, self.CodecCtx.pix_fmt, self.dest_width,self.dest_height,self.pixel_format, SWS_BILINEAR, NULL, NULL, NULL)
         if self.convert_ctx == NULL:
             raise MemoryError("Unable to allocate scaler context")
@@ -1239,7 +1253,7 @@ cdef class VideoTrack(Track):
 
     def get_current_frame(self):
         """ return the image with the smallest time index among the not yet displayed decoded frame """
-        am=self.smallest_videobank_time()
+        am=self.safe_smallest_videobank_time()
         return self.videoframebank[am]
 
     def _internal_get_current_frame(self):
@@ -1259,12 +1273,16 @@ cdef class VideoTrack(Track):
             pFrameRes = self._convert_withbuf(<AVPicture *>self.frame,<char *><unsigned long long>PyArray_DATA_content(img_image))
             #PyMem_Free(pFrameRes.data[0]) ## free the data of the frame ???
         else:
-            pFrameRes = self._convert_to(<AVPicture *>self.frame)
-            numBytes=avpicture_get_size(self.pixel_format, self.dest_width, self.dest_height)
-            buf_obj = PyBuffer_FromMemory(pFrameRes.data[0],numBytes)
+            #pFrameRes = self._convert_to(<AVPicture *>self.frame)
+            #numBytes=avpicture_get_size(self.pixel_format, self.dest_width, self.dest_height)
+            #buf_obj = PyBuffer_FromMemory(pFrameRes.data[0],numBytes)
             #img_image=numpy.ndarray(shape=(self.dest_height,self.dest_width,numBytes/(self.dest_width*self.dest_height)),dtype=numpy.uint8,buffer=buf_obj).copy()
-            img_image=buf_obj.copy()
-            PyMem_Free(pFrameRes.data[0]) ## free of the fata of the frame ???
+            img_image=self.videoframebuffers.pop()	    
+            #img_image=buf_obj.copy()
+            bufferdata="\0"*(self.dest_width*self.dest_height*3)
+            pFrameRes = self._convert_withbuf(<AVPicture *>self.frame,<char *>bufferdata)
+            img_image.fromstring(bufferdata)	    
+            #PyMem_Free(pFrameRes.data[0]) ## free of the data of the frame ???
         av_free(pFrameRes)
         return img_image
 
@@ -1306,6 +1324,8 @@ cdef class VideoTrack(Track):
     def smallest_videobank_time(self):
         """ returns the index of the frame in the videoframe bank that have the smallest time index """
         mi=0
+        if (len(self.videoframebank)==0):
+            raise Exception,"empty"
         vi=self.videoframebank[mi][0]
         for i in range(1,len(self.videoframebank)):
             if (vi<self.videoframebank[mi][0]):
@@ -1325,6 +1345,8 @@ cdef class VideoTrack(Track):
     def _finalize_seek(self, rtargetPts):
         while True:
             self.__next_frame()
+#	    if (self.debug_seek):
+#	      sys.stderr.write("finalize_seek : %d\n"%self.pts)
             if self.pts >= rtargetPts:
                 break
 
@@ -1419,17 +1441,23 @@ cdef class VideoTrack(Track):
     #           targetPts = timestamp * AV_TIME_BASE
     #           return self.GetFramePts(targetPts)
 
+    def safe_smallest_videobank_time(self):
+        try:
+            return self.smallest_videobank_time()
+        except:
+            self.__next_frame()
+            return self.smallest_videobank_time()
 
     def get_current_frame_pts(self):
-        am=self.smallest_videobank_time()
+        am=self.safe_smallest_videobank_time()
         return self.videoframebank[am][0]
 
     def get_current_frame_frameno(self):
-        am=self.smallest_videobank_time()
+        am=self.safe_smallest_videobank_time()
         return self.videoframebank[am][1]
 
     def get_current_frame_type(self):
-        am=self.smallest_videobank_time()
+        am=self.safe_smallest_videobank_time()
         return self.videoframebank[am][3]
 
     def _get_current_frame_frameno(self):
@@ -1488,6 +1516,18 @@ cdef class FFMpegReader(AFFMpegReader):
         self.with_jit=with_jit
         self.seek_before_security_interval=seek_before
 
+    def __dealloc__(self):
+        self.tracks=[]
+        if (self.FormatCtx!=NULL):
+            if (self.packet):
+                av_free_packet(self.packet)
+                self.packet=NULL
+            if (self.prepacket):
+                av_free_packet(self.prepacket)
+                self.prepacket=NULL
+            av_close_input_file(self.FormatCtx)
+            self.FormatCtx=NULL
+
     def __del__(self):
         self.close()
 
@@ -1499,7 +1539,7 @@ cdef class FFMpegReader(AFFMpegReader):
         cdef AVProbeData probe_data
         cdef unsigned char tbuffer[65536]
         cdef unsigned char tbufferb[65536]
-        self.io_context=av_alloc_put_byte(tbufferb, 65536, 0,<void *>0,<void *>0,<void *>0,<void *>0)  #<ByteIOContext*>PyMem_Malloc(sizeof(ByteIOContext))
+        #self.io_context=av_alloc_put_byte(tbufferb, 65536, 0,<void *>0,<void *>0,<void *>0,<void *>0)  #<ByteIOContext*>PyMem_Malloc(sizeof(ByteIOContext))
         #IOString ios
         URL_RDONLY=0
         if (url_fopen(&self.io_context, filename,URL_RDONLY ) < 0):
@@ -1618,7 +1658,7 @@ cdef class FFMpegReader(AFFMpegReader):
                 self.packet=NULL
             if (self.prepacket):
                 av_free_packet(self.prepacket)
-                self.packet=NULL
+                self.prepacket=NULL
             self.tracks=[] # break cross references
             av_close_input_file(self.FormatCtx)
             self.FormatCtx=NULL
@@ -1658,7 +1698,10 @@ cdef class FFMpegReader(AFFMpegReader):
         return self.get_current_frame()
 
     def __len__(self):
-        return len(self.tracks[0])
+        try:
+            return len(self.tracks[0])
+        except:
+            raise IOError,"File not correctly opened"
 
     def process_current_packet(self):
         """ dispatch the packet to the correct track processor """
@@ -1799,10 +1842,10 @@ cdef class FFMpegReader(AFFMpegReader):
 
     def _finalize_seek_to(self, pts):
         while(self.tracks[0].get_cur_pts()<pts):
-            #sys.stderr.write("approx PTR:" + str(self.tracks[0].get_cur_pts())+"\n")
+            #sys.stderr.write("approx PTS:" + str(self.tracks[0].get_cur_pts())+"\n")	    
             #print "approx pts:", self.tracks[0].get_cur_pts()
             self.step()
-        #sys.stderr.write("result PTR:" + str(self.tracks[0].get_cur_pts())+"\n")
+        #sys.stderr.write("result PTS:" + str(self.tracks[0].get_cur_pts())+"\n")
         #sys.stderr.write("result PTR hex:" + hex(self.tracks[0].get_cur_pts())+"\n")
 
     def seek_bytes(self, byte):
@@ -1885,22 +1928,22 @@ class VideoStream:
     def __del__(self):
         self.close()
     def open(self, *args, ** xargs ):
-        xargs["track_selector"]=TS_VIDEO
+        xargs["track_selector"]=TS_VIDEO_PIL
         self.vr.open(*args, **xargs)
         self.tv=self.vr.get_tracks()[0]
     def close(self):
         self.vr.close()
         self.vr=None
     def GetFramePts(self, pts):
-        self.vr.seek_to_pts(pts)
-        return self.vr.get_current_frame()
+        self.tv.seek_to_pts(pts)
+        return self.tv.get_current_frame()[2]
     def GetFrameNo(self, fno):
-        self.tv[0].seek_to_frameno(fno)
-        return self.vr.get_current_frame()
+        self.tv.seek_to_frame(fno)
+        return self.tv.get_current_frame()[2]
     def GetCurrentFrame(self, fno):
-        return self.vr.get_current_frame()
+        return self.tv.get_current_frame()[2]
     def GetNextFrame(self, fno):
-        return self.vr.get_next_frame()
+        return self.tv.get_next_frame()
 
 
 ##
