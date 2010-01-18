@@ -1,0 +1,11 @@
+include LICENSE INSTALL COPYING
+include *.txt
+include *.py
+include *.pyx
+recursive-include examples  *.py
+recursive-include tests  *.py
+prune build
+prune *.old
+prune *.o
+prune *.c
+
