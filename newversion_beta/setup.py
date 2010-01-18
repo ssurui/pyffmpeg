@@ -113,9 +113,20 @@ else:
                        libraries = libs)
                     ]
 
+                    
+meta_data={
+'author':'Bertrand Nouvel',
+'author_email':'bertrand.nouvel@gmail.com',
+'maintainer':'Bertrand Nouvel',
+'maintainer_email':'bertrand.nouvel@gmail.com',
+'description':'Allows to easily read multimedia files from python',
+'version':'1.9.0beta'
+}
 
 setup(
     name = 'pyffmpeg',
     cmdclass = {'build_ext': build_ext},
-    ext_modules = ext_modules
+    ext_modules = ext_modules,
+    **meta_data
 )
+
