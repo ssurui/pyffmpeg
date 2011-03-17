@@ -1,4 +1,4 @@
-#labels mailing-list
+#labels mailing-list,Deprecated
 Two mailing lists are available : 
 
   * http://groups.google.com/group/pyffmpeg : this list is for regular user questions like compilation troubles.
